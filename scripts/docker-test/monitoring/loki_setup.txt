@@ -1,0 +1,150 @@
+===========================================
+Grafana Loki Setup for Docker Log Monitoring
+===========================================
+
+Purpose: Configure Loki to collect and view logs from Docker containers and Nomad jobs.
+
+Part 1: Starting Loki with Docker
+----------------------------------
+
+Since the assignment uses Docker for the application, we run Loki in Docker as well.
+
+1. Create a Docker network for Loki and Grafana:
+   docker network create loki-net
+
+2. Run Loki in Docker:
+   docker run -d --name loki \
+     --network loki-net \
+     -p 3100:3100 \
+     grafana/loki:latest \
+     -config.file=/etc/loki/local-config.yaml
+
+3. Run Promtail (log collector) to scrape Docker logs:
+   docker run -d --name promtail \
+     --network loki-net \
+     -v /var/lib/docker/containers:/var/lib/docker/containers:ro \
+     -v /var/run/docker.sock:/var/run/docker.sock \
+     -p 9080:9080 \
+     grafana/promtail:latest \
+     -config.file=/etc/promtail/config.yml
+
+4. Run Grafana for visualization:
+   docker run -d --name grafana \
+     --network loki-net \
+     -p 3000:3000 \
+     grafana/grafana:latest
+
+5. Verify all containers are running:
+   docker ps | grep -E "loki|promtail|grafana"
+
+Part 2: Configure Grafana to Use Loki
+--------------------------------------
+
+1. Access Grafana: http://localhost:3000
+   Default login: admin/admin (change password on first login)
+
+2. Add Loki as a data source:
+   - Go to Configuration → Data Sources → Add data source
+   - Select "Loki"
+   - URL: http://loki:3100
+   - Click "Save & Test"
+
+3. View logs:
+   - Go to Explore
+   - Select Loki data source
+   - Query: {container_name="devops-hello"} (or use LogQL)
+   - Click "Run query"
+
+Part 3: Forwarding Container Logs to Loki
+------------------------------------------
+
+Option A: For Docker containers (our devops-hello container)
+
+When running the Docker container, logs are automatically captured by Promtail:
+   docker run --name devops-hello --log-driver=json-file devops-hello:v1
+
+Option B: For Nomad jobs
+
+Create a Nomad job with logging configuration:
+
+job "devops-hello" {
+  datacenters = ["dc1"]
+  
+  group "hello" {
+    type = "service"
+    
+    task "hello" {
+      driver = "docker"
+      
+      config {
+        image = "devops-hello:v1"
+        logging {
+          driver = "json-file"
+          options {
+            max-size = "10m"
+            max-file = "3"
+          }
+        }
+      }
+      
+      resources {
+        cpu    = 50
+        memory = 64
+      }
+    }
+  }
+}
+
+Part 4: Commands to View Logs
+-----------------------------
+
+1. View logs via Docker CLI:
+   docker logs devops-hello
+
+2. View logs via Loki API:
+   curl -G 'http://localhost:3100/loki/api/v1/query' \
+     --data-urlencode 'query={container_name="devops-hello"}' \
+     --data-urlencode 'limit=10'
+
+3. View logs via Grafana UI:
+   - Open http://localhost:3000
+   - Navigate to Explore
+   - Select Loki data source
+   - Query: {container_name="devops-hello"}
+   - Adjust time range as needed
+
+4. View logs in real-time:
+   - In Grafana Explore, click "Live" button for streaming logs
+   - Or use Loki CLI:
+     docker exec -it loki logcli query '{container_name="devops-hello"}' --tail
+
+Part 5: Log Query Examples
+--------------------------
+
+All logs from our container:
+   {container_name="devops-hello"}
+
+Filter by log level:
+   {container_name="devops-hello"} |= "Hello"
+
+Line containing "error":
+   {container_name="devops-hello"} |~ "error"
+
+Logs from the last 5 minutes:
+   {container_name="devops-hello"} | json | __timestamp > now() - 5m
+
+Part 6: Cleanup (When Done)
+---------------------------
+
+To stop and remove all monitoring containers:
+   docker stop loki promtail grafana
+   docker rm loki promtail grafana
+   docker network rm loki-net
+
+==================================================================================
+Notes:
+- Loki stores logs efficiently, requiring less storage than traditional solutions
+- Promtail automatically discovers Docker containers and forwards logs
+- Grafana provides a user friendly interface for log exploration
+- LogQL is Loki's query language
+==================================================================================
